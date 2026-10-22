@@ -22,13 +22,13 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
       RUSTUP_TOOLCHAIN: '1.99.1'
-      CANDIDATE: 3d1cd68b283f5d0ac94766610fcc5c0b01b43d20
+      CANDIDATE: 11b08a2604e7ab512e0683057f69a3f1d160f08d
       BASELINE: b62467ef1b5303e3e340283ed96425dcf9612993
     steps:
       - name: Receive immutable candidate source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 3d1cd68b283f5d0ac94766610fcc5c0b01b43d20
+          ref: 11b08a2604e7ab512e0683057f69a3f1d160f08d
           fetch-depth: 1
           persist-credentials: false
       - name: Receive source scope and official compiler
