@@ -1,0 +1,97 @@
+name: ROOT3340 Railway numeric contract receiving
+
+on:
+  push:
+    branches: [codex/root3340-railway-hosted-receiving-20261022]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: root3340-railway-numeric-receiving
+  cancel-in-progress: false
+
+jobs:
+  receive:
+    if: github.repository == 'epistemedeus/railway-cli'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      RUSTUP_TOOLCHAIN: '1.99.1'
+      CANDIDATE: 3d1cd68b283f5d0ac94766610fcc5c0b01b43d20
+      BASELINE: b62467ef1b5303e3e340283ed96425dcf9612993
+    steps:
+      - name: Receive immutable candidate source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 3d1cd68b283f5d0ac94766610fcc5c0b01b43d20
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Receive source scope and official compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir verification
+          test "$(git rev-parse HEAD)" = "$CANDIDATE"
+          git fetch --no-tags --depth=1 origin "$BASELINE"
+          test "$(git diff --name-only "$BASELINE" "$CANDIDATE" | sort | tr '\n' '|')" = 'src/controllers/config/environment.rs|src/controllers/config/patch.rs|'
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt
+          rustc --version | tee verification/rustc.txt
+          cargo --version | tee verification/cargo.txt
+          git diff --stat "$BASELINE" "$CANDIDATE" | tee verification/source-scope.txt
+          free -b | tee verification/host-memory.txt
+          df -B1 . | tee verification/host-disk.txt
+      - name: Execute candidate config tests and reject empty filters
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/time -v cargo test --locked --bin railway controllers::config:: -- --test-threads=1 2>&1 | tee verification/candidate-config.log
+          for name in resource_limits_round_trip_without_writes resource_limits_keep_optional_behavior invalid_resource_limits_refuse_and_recover_without_writes resource_byte_schema_preserves_numbers resource_number_edits_reject_invalid_input; do
+            grep -F "::$name ... ok" verification/candidate-config.log
+          done
+          grep -E 'test result: ok\. [1-9][0-9]* passed; 0 failed;' verification/candidate-config.log
+      - name: Reproduce provider failure with unchanged baseline implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'git checkout "$CANDIDATE" -- src/controllers/config/environment.rs' EXIT
+          node <<'NODE'
+          const fs=require('node:fs'),assert=require('node:assert/strict'),cp=require('node:child_process');
+          const file='src/controllers/config/environment.rs',marker='\n#[cfg(test)]\n';
+          const candidate=fs.readFileSync(file,'utf8'),baseline=cp.execFileSync('git',['show',process.env.BASELINE+':'+file],{encoding:'utf8'});
+          assert.equal(candidate.split(marker).length,2);assert.equal(baseline.split(marker).length,2);
+          const originalImplementation=baseline.split(marker)[0],candidateTests=candidate.split(marker)[1];
+          assert(candidateTests.includes('async fn resource_limits_round_trip_without_writes()'));
+          fs.writeFileSync(file,originalImplementation+marker+candidateTests);
+          assert.equal(fs.readFileSync(file,'utf8').split(marker)[0],originalImplementation);
+          console.log('Baseline production implementation is byte-identical; only candidate tests are attached.');
+          NODE
+          set +e
+          /usr/bin/time -v cargo test --locked --bin railway controllers::config::environment::tests::resource_limits_round_trip_without_writes -- --exact --test-threads=1 2>&1 | tee verification/baseline-regression.log
+          code=${PIPESTATUS[0]}
+          set -e
+          test "$code" -ne 0
+          grep -F 'test result: FAILED. 0 passed; 1 failed;' verification/baseline-regression.log
+          grep -F '2147483648.0000005' verification/baseline-regression.log
+          grep -F 'expected i64' verification/baseline-regression.log
+      - name: Receive restored candidate compilation and formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          /usr/bin/time -v cargo check --locked --bin railway 2>&1 | tee verification/candidate-check.log
+          rustfmt --edition 2024 --check src/controllers/config/environment.rs src/controllers/config/patch.rs
+          git diff --exit-code
+          git rev-parse HEAD | tee verification/received-source.txt
+      - name: Preserve bounded public verification logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: root3340-railway-numeric-receiving
+          path: verification/
+          if-no-files-found: error
+          retention-days: 30
